@@ -1,12 +1,16 @@
 FROM python:3.12-slim
 
-# Install dependencies
+# Install dependencies and build tools
 RUN apt-get update && apt-get install -y \
     aria2 \
     ffmpeg \
     curl \
     lsof \
     net-tools \
+    build-essential \
+    python3-dev \
+    libffi-dev \
+    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
