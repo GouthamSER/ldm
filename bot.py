@@ -42,8 +42,8 @@ aria2 = aria2p.API(
 
 # ================= GLOBAL STATE =================
 ACTIVE = {}  # Tracks GID (download) or msg.id (upload)
-DOWNLOAD_IN_PROGRESS = False
-UPLOAD_IN_PROGRESS = False
+DOWNLOAD_COUNT = 0
+UPLOAD_COUNT = 0
 TOTAL_DOWNLOAD_TIME = 0
 TOTAL_UPLOAD_TIME = 0
 
@@ -51,9 +51,9 @@ def time_tracker():
     """Increments total time spent downloading or uploading."""
     global TOTAL_DOWNLOAD_TIME, TOTAL_UPLOAD_TIME
     while True:
-        if DOWNLOAD_IN_PROGRESS:
+        if DOWNLOAD_COUNT > 0:
             TOTAL_DOWNLOAD_TIME += 1
-        if UPLOAD_IN_PROGRESS:
+        if UPLOAD_COUNT > 0:
             TOTAL_UPLOAD_TIME += 1
         time.sleep(1)
 
@@ -128,6 +128,10 @@ app = Client(
 )
 
 async def edit_message_async(msg, content, parse_mode):
+    # Check if the content is the same as the current message text to avoid MESSAGE_NOT_MODIFIED error
+    if msg.text == content:
+        return None  # Skip editing if content hasn't changed
+    
     try:
         return await msg.edit(content, parse_mode=parse_mode)
     except FloodWait as e:
@@ -138,13 +142,54 @@ async def edit_message_async(msg, content, parse_mode):
         print(f"Error editing message: {edit_error}")
         return None
 
+async def reply_message_async(m, text, parse_mode=None):
+    try:
+        return await m.reply(text, parse_mode=parse_mode)
+    except FloodWait as e:
+        print(f"Hit FloodWait in reply_message_async: Waiting for {e.value} seconds...")
+        await asyncio.sleep(e.value)
+        return await m.reply(text, parse_mode=parse_mode)
+    except Exception as reply_error:
+        print(f"Error replying message: {reply_error}")
+        return None
+
+async def upload_file(msg, file_path, name, file_size, loop):
+    global UPLOAD_COUNT
+    UPLOAD_COUNT += 1
+    try:
+        await app.send_document(
+            msg.chat.id, 
+            file_path,
+            caption=f"✅ **{name}**\nSize: {format_size(file_size)}",
+            progress=upload_progress, 
+            progress_args=(msg, time.time(), name, enums.ParseMode.MARKDOWN, loop)
+        )
+        
+        # If upload completes successfully
+        await edit_message_async(msg, f"✅ Upload complete for **{name}**!", parse_mode=enums.ParseMode.MARKDOWN)
+    
+    except Exception as e:
+        print(f"Upload failed: {e}")
+        
+        # --- FIX: Skip final error message if manual cancel occurred ---
+        if not ACTIVE.get(msg.id, {}).get("cancel", False):
+            await edit_message_async(msg, f"❌ Upload failed: {str(e)}", parse_mode=None)
+    
+    finally:
+        UPLOAD_COUNT -= 1
+        # Clean up the entry from ACTIVE
+        ACTIVE.pop(msg.id, None) 
+        
+        if os.path.exists(file_path):
+            await asyncio.to_thread(os.remove, file_path)
+
 @app.on_message(filters.command(["l", "leech"]))
 async def leech(_, m: Message):
-    global DOWNLOAD_IN_PROGRESS, UPLOAD_IN_PROGRESS
+    global DOWNLOAD_COUNT
     PARSE_MODE = enums.ParseMode.MARKDOWN
 
     if len(m.command) < 2:
-        return await m.reply("Usage:\n/l <direct_url>", parse_mode=None)
+        return await reply_message_async(m, "Usage:\n/l <direct_url>", parse_mode=None)
 
     url = m.command[1]
     
@@ -160,14 +205,13 @@ async def leech(_, m: Message):
         gid = dl.gid
     except Exception as e:
         print(f"Aria2 Add URI Failed: {e}")
-        return await m.reply(f"Failed to start download: {e}", parse_mode=None)
+        return await reply_message_async(m, f"Failed to start download: {e}", parse_mode=None)
 
-    msg = await m.reply(f"🚀 Starting download\nGID: `{gid}`", parse_mode=PARSE_MODE)
+    msg = await reply_message_async(m, f"🚀 Starting download\nGID: `{gid}`", parse_mode=PARSE_MODE)
     # Store GID and cancel flag for download phase
     ACTIVE[gid] = {"cancel": False}
+    DOWNLOAD_COUNT += 1
     
-    DOWNLOAD_IN_PROGRESS = True  # Set download flag
-
     while not dl.is_complete:
         if ACTIVE[gid]["cancel"] or dl.is_removed or dl.has_failed:
             await edit_message_async(msg, f"Download {gid} finished, removed, or failed.", parse_mode=None)
@@ -208,7 +252,7 @@ async def leech(_, m: Message):
         await asyncio.sleep(3)  # Throttle edits to avoid FloodWait
 
     # Download finished, reset flag
-    DOWNLOAD_IN_PROGRESS = False 
+    DOWNLOAD_COUNT -= 1
     
     # Remove GID from active tasks after download is done/failed
     ACTIVE.pop(gid, None) 
@@ -226,67 +270,38 @@ async def leech(_, m: Message):
             except:
                 await edit_message_async(msg, "❌ File corrupted or empty.", parse_mode=None)
             else:
-                try:
-                    loop = asyncio.get_running_loop()
-                    start_time = time.time()
-                    
-                    # --- TRANSITION MESSAGE ---
-                    await edit_message_async(msg, 
-                                             f"✅ Download complete! Starting upload of **{dl.name}**\n"
-                                             f"To cancel upload, use `/c_{msg.id}`", 
-                                             parse_mode=PARSE_MODE)
-                    # --- END TRANSITION MESSAGE ---
-                    
-                    # Store message ID, file path, and cancel flag for upload phase tracking
-                    ACTIVE[msg.id] = {"cancel": False, "file_path": file_path, "name": dl.name}
-                    
-                    UPLOAD_IN_PROGRESS = True  # Set upload flag
-                    
-                    await app.send_document(
-                        m.chat.id, 
-                        file_path,
-                        caption=f"✅ **{dl.name}**\nSize: {format_size(file_size)}",
-                        progress=upload_progress, 
-                        progress_args=(msg, start_time, dl.name, PARSE_MODE, loop)
-                    )
-                    
-                    # If upload completes successfully
-                    await edit_message_async(msg, f"✅ Upload complete for **{dl.name}**!", parse_mode=PARSE_MODE)
+                # --- TRANSITION MESSAGE ---
+                await edit_message_async(msg, 
+                                         f"✅ Download complete! Starting upload of **{dl.name}**\n"
+                                         f"To cancel upload, use `/c_{msg.id}`", 
+                                         parse_mode=PARSE_MODE)
+                # --- END TRANSITION MESSAGE ---
                 
-                except Exception as e:
-                    print(f"Upload failed: {e}")
-                    
-                    # --- FIX: Skip final error message if manual cancel occurred ---
-                    if not ACTIVE.get(msg.id, {}).get("cancel", False):
-                        await edit_message_async(msg, f"❌ Upload failed: {str(e)}", parse_mode=None)
-            
-                finally:
-                    UPLOAD_IN_PROGRESS = False  # Reset upload flag
-                    # Clean up the entry from ACTIVE
-                    ACTIVE.pop(msg.id, None) 
-            
-            if os.path.exists(file_path):
-                await asyncio.to_thread(os.remove, file_path)
+                # Store message ID, file path, and cancel flag for upload phase tracking
+                ACTIVE[msg.id] = {"cancel": False, "file_path": file_path, "name": dl.name, "last_edit": 0}
+                
+                # Start upload in background (concurrent with other tasks)
+                loop = asyncio.get_running_loop()
+                asyncio.create_task(upload_file(msg, file_path, dl.name, file_size, loop))
     
     elif dl.has_failed:
         await edit_message_async(msg, f"❌ Download **{dl.name}** failed.\nReason: {dl.error_message}", parse_mode=PARSE_MODE)
 
 @app.on_message(filters.regex(r"^/c_"))
 async def cancel(_, m: Message):
-    global UPLOAD_IN_PROGRESS
     task_id = m.text.replace("/c_", "")
 
-    # Check if task_id is a GID (typically 6-character hex) AND is currently an active download
-    if len(task_id) == 6 and task_id in ACTIVE and "file_path" not in ACTIVE.get(task_id, {}): 
+    # Check if task_id is a GID (Aria2 GIDs are 16 hexadecimal characters) AND is currently an active download
+    if len(task_id) == 16 and task_id in ACTIVE and "file_path" not in ACTIVE.get(task_id, {}): 
         
         # --- ARIA2 DOWNLOAD CANCELLATION (using GID) ---
         ACTIVE[task_id]["cancel"] = True
         try:
             dl = await asyncio.to_thread(aria2.get_download, task_id)
             await asyncio.to_thread(aria2.remove, [dl], force=True)
-            await m.reply(f"🛑 Cancelled Download GID: **{task_id}**", parse_mode=enums.ParseMode.MARKDOWN)
+            await reply_message_async(m, f"🛑 Cancelled Download GID: **{task_id}**", parse_mode=enums.ParseMode.MARKDOWN)
         except Exception as e:
-             await m.reply(f"🛑 Could not cancel GID **{task_id}**: {e}", parse_mode=enums.ParseMode.MARKDOWN)
+             await reply_message_async(m, f"🛑 Could not cancel GID **{task_id}**: {e}", parse_mode=enums.ParseMode.MARKDOWN)
     
     # Check if task_id is a Message ID (purely numeric) AND is currently an active upload
     elif task_id.isdigit() and int(task_id) in ACTIVE and "file_path" in ACTIVE.get(int(task_id), {}):
@@ -304,11 +319,10 @@ async def cancel(_, m: Message):
             await asyncio.to_thread(os.remove, file_path)
             
         # 3. Inform the user and reset upload flag
-        UPLOAD_IN_PROGRESS = False
-        await m.reply(f"🛑 Cancelled Upload **{task_info['name']}**.\nFile deleted.", parse_mode=enums.ParseMode.MARKDOWN)
+        await reply_message_async(m, f"🛑 Cancelled Upload **{task_info['name']}**.\nFile deleted.", parse_mode=enums.ParseMode.MARKDOWN)
         
     else:
-        await m.reply(f"Task ID **{task_id}** not found or already complete.", parse_mode=enums.ParseMode.MARKDOWN)
+        await reply_message_async(m, f"Task ID **{task_id}** not found or already complete.", parse_mode=enums.ParseMode.MARKDOWN)
 
 def upload_progress(current, total, msg, start_time, name, parse_mode, loop):
     if total == 0:
@@ -320,6 +334,11 @@ def upload_progress(current, total, msg, start_time, name, parse_mode, loop):
         raise Exception("Upload manually cancelled by user.")
     # --- END CANCELLATION CHECK ---
 
+    # Throttle edits to every 3 seconds to avoid FloodWait and prevent blocking
+    current_time = time.time()
+    if current_time - ACTIVE.get(msg.id, {}).get("last_edit", 0) < 3:
+        return  # Skip editing if less than 3 seconds have passed
+    
     elapsed = time.time() - start_time
     speed = current / elapsed if elapsed > 0 else 0
     progress_bar_output = progress_bar(current, total)
@@ -329,14 +348,16 @@ def upload_progress(current, total, msg, start_time, name, parse_mode, loop):
         f"**📤 UPLOADING: {name}**\n"
         f"┟ `{progress_bar_output}`\n"
         f"┠ Processed → {format_size(current)} of {format_size(total)}\n"
-        f"┖ Speed → **{format_speed(speed)}**"
+        f"┠ Speed → **{format_speed(speed)}**\n"
+        f"┖ Cancel → /c_{msg.id}"
     )
     # --- END UPLOAD MESSAGE TEMPLATE ---
     
     try:
         coro = edit_message_async(msg, new_content, parse_mode)
         asyncio.run_coroutine_threadsafe(coro, loop)
-        time.sleep(3)  # Throttle edits to avoid FloodWait
+        # Update last edit time
+        ACTIVE[msg.id]["last_edit"] = current_time
     except:
         pass
 
@@ -391,7 +412,7 @@ async def bot_stats(_, m: Message):
         f"┖ UL Time → **{total_ul_str}**"
     )
     
-    await m.reply_text(stats_text, parse_mode=enums.ParseMode.MARKDOWN)
+    await reply_message_async(m, stats_text, parse_mode=enums.ParseMode.MARKDOWN)
 
 async def health(request):
     return web.Response(text="OK")
