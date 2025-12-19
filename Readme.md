@@ -16,12 +16,16 @@ A high-performance Telegram bot built with **Pyrogram** and integrated with **Ar
 * A Telegram API Key (`API_ID` and `API_HASH`).
 * A Telegram Bot Token (`BOT_TOKEN`).
 * A running **Aria2** daemon accessible on `http://localhost:6801` with RPC enabled. (For cloud deployment, ensure Aria2 is running in the same container/environment).
-* Python 3.8+
+* Python 3.10+
 
 ### 🛠️ Setup and Installation
 
 #### 1. Clone the repository
 
 ```bash
-git clone <YOUR_REPO_URL>
-cd <YOUR_REPO_NAME>
+git clone https://github.com/GouthamJosh/ldm
+cd 1dm
+bash start.sh
+```
+Give Credits To [Goutham Josh](https://t.me/im_goutham_josh) ✔❤<br>
+Fork it Light Weight Repo !!!
