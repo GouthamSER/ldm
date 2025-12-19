@@ -23,7 +23,7 @@ A high-performance Telegram bot built with **Pyrogram** and integrated with **Ar
 #### 1. Clone the repository
 
 ```bash
-git clone https://github.com/GouthamJosh/ldm
+git clone https://github.com/GouthamJosh/tg-leech
 cd 1dm
 bash start.sh
 ```
