@@ -13,6 +13,15 @@ from pyrogram.errors import FloodWait
 import aria2p
 from aiohttp import web
 
+# Import uvicorn for the web server and starlette for a simple app
+try:
+    import uvicorn
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+except ImportError:
+    print("WARNING: uvicorn and starlette not installed. Health check will not run.")
+
 # ================= CONFIG =================
 API_ID = int(os.getenv("API_ID", "18979569"))
 API_HASH = os.getenv("API_HASH", "45db354387b8122bdf6c1b0beef93743")
@@ -313,9 +322,9 @@ async def leech(_, m: Message):
             else:
                 # TRANSITION MESSAGE
                 await edit_message_async(msg, 
-                                         f"✅ Download complete! Starting upload of **{dl.name}**\n"
-                                         f"To cancel upload, use `/cancel{download_index}_{gid}`", 
-                                         parse_mode=PARSE_MODE)
+                                            f"✅ Download complete! Starting upload of **{dl.name}**\n"
+                                            f"To cancel upload, use `/cancel{download_index}_{gid}`", 
+                                            parse_mode=PARSE_MODE)
                 
                 # Store GID, file path, and cancel flag for upload phase tracking
                 ACTIVE[gid] = {"cancel": False, "file_path": file_path, "name": dl.name, "last_edit": 0, "msg": msg}
@@ -354,9 +363,10 @@ async def cancel(_, m: Message):
             try:
                 dl = await asyncio.to_thread(aria2.get_download, task_id)
                 await asyncio.to_thread(aria2.remove, [dl], force=True)
-                await reply_message_async(m, f"🛑 Cancelled Download GID: **{task_id}**", parse_mode=enums.ParseMode.MARKDOWN)
             except Exception as e:
-                await reply_message_async(m, f"🛑 Could not cancel GID **{task_id}**: {e}", parse_mode=enums.ParseMode.MARKDOWN)
+                # Ignore exception if download wasn't in aria2's list anymore
+                print(f"Error removing Aria2 download: {e}")
+            await reply_message_async(m, f"🛑 Cancelled Download GID: **{task_id}**", parse_mode=enums.ParseMode.MARKDOWN)
     else:
         await reply_message_async(m, f"Task ID **{task_id}** not found or already complete.", parse_mode=enums.ParseMode.MARKDOWN)
 
@@ -388,7 +398,7 @@ def upload_progress(current, total, gid, start_time, name, parse_mode, loop, dow
         f"┠ Processed: {format_size(current)} of {format_size(total)}\n"
         f"┠ Status: Upload | ETA: {eta_str}\n"
         f"┠ Speed: {format_speed(speed)} | Elapsed: {elapsed_str}\n"
-        f"┠ Engine: PyroMulti v2.2.11\n"
+        f"┠ Engine: Pyrogram v2\n"
         f"┠ Mode: #Leech | #qBit\n"
         f"┠ User: {user_first} | ID: {user_id}\n"
         f"┖ /cancel{download_index}_{gid}"
@@ -491,22 +501,30 @@ async def bot_stats(_, m: Message):
     
     await reply_message_async(m, stats_text, parse_mode=enums.ParseMode.MARKDOWN)
     
-async def health(request):
-    return web.Response(text="OK")
+# ================= HEALTH CHECK (UVICORN) =================
 
-async def start_health():
-    apph = web.Application()
-    apph.router.add_get("/health", health)
-    runner = web.AppRunner(apph)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", HEALTH_PORT)
-    await site.start()
+async def health_endpoint(request):
+    """Simple Starlette endpoint for the health check."""
+    return PlainTextResponse("OK")
 
-def run_health():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(start_health())
-    loop.run_forever()
+# Starlette application setup
+if 'uvicorn' in globals():
+    routes = [
+        Route("/health", endpoint=health_endpoint)
+    ]
+    health_app = Starlette(routes=routes)
+
+    def run_health():
+        """Function to run uvicorn in a separate thread."""
+        try:
+            uvicorn.run(
+                health_app,
+                host="0.0.0.0",
+                port=HEALTH_PORT,
+                log_level="error"  # Keep uvicorn output quiet
+            )
+        except Exception as e:
+            print(f"❌ Uvicorn failed to start: {e}")
 
 if __name__ == "__main__":
     try:
@@ -520,5 +538,10 @@ if __name__ == "__main__":
 
     # Store bot start time for uptime calculation
     app.start_time = time.time()
-    threading.Thread(target=run_health, daemon=True).start()
+    
+    # Start the Uvicorn/Starlette health check in a separate thread
+    if 'uvicorn' in globals():
+        threading.Thread(target=run_health, daemon=True).start()
+        print(f"🌐 Health check running on port {HEALTH_PORT} (Uvicorn/Starlette)\n")
+    
     app.run()
