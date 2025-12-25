@@ -1,3 +1,5 @@
+# bot.py
+
 import os
 import time
 import asyncio
@@ -13,21 +15,17 @@ from pyrogram.errors import FloodWait
 import aria2p
 from aiohttp import web
 
-# ================= HEALTH CHECK IMPORTS (UVICORN/STARLETTE) =================
+# ================= HEALTH CHECK IMPORTS (MODULARIZED) =================
+# We try to import the web server logic from the new module
 try:
-    import uvicorn
-    from starlette.applications import Starlette
-    from starlette.responses import PlainTextResponse
-    from starlette.routing import Route 
+    from plugins.weblive import start_web_server_thread
     UVICORN_AVAILABLE = True
-except ImportError:
-    print("WARNING: uvicorn and starlette not installed. Health check will not run.")
-    # Define placeholder variables to prevent NameErrors later
-    Route = None
-    Starlette = None
-    PlainTextResponse = None
+except ImportError as e:
+    # This will catch if the module or its dependencies (uvicorn/starlette) are missing
+    print("WARNING: Could not import web server module 'plugins.weblive'. Health check will not run.")
+    print(f"Import error details: {e}")
     UVICORN_AVAILABLE = False
-# ============================================================================
+# ======================================================================
 
 # ================= CONFIG =================
 API_ID = int(os.getenv("API_ID", "18979569"))
@@ -504,31 +502,6 @@ async def bot_stats(_, m: Message):
     
     await reply_message_async(m, stats_text, parse_mode=enums.ParseMode.MARKDOWN)
     
-# ================= HEALTH CHECK (UVICORN) =================
-
-if UVICORN_AVAILABLE:
-    async def health_endpoint(request):
-        """Simple Starlette endpoint for the health check."""
-        return PlainTextResponse("OK")
-
-    # Starlette application setup
-    routes = [
-        Route("/health", endpoint=health_endpoint)
-    ]
-    health_app = Starlette(routes=routes)
-
-    def run_health():
-        """Function to run uvicorn in a separate thread."""
-        try:
-            uvicorn.run(
-                health_app,
-                host="0.0.0.0",
-                port=HEALTH_PORT,
-                log_level="error"  # Keep uvicorn output quiet
-            )
-        except Exception as e:
-            print(f"❌ Uvicorn failed to start: {e}")
-
 if __name__ == "__main__":
     try:
         aria2.get_stats()
@@ -544,7 +517,7 @@ if __name__ == "__main__":
     
     # Start the Uvicorn/Starlette health check in a separate thread
     if UVICORN_AVAILABLE:
-        threading.Thread(target=run_health, daemon=True).start()
-        print(f"🌐 Health check running on port {HEALTH_PORT} (Uvicorn/Starlette)\n")
+        # Call the function imported from plugins.weblive
+        start_web_server_thread(HEALTH_PORT)
     
     app.run()
