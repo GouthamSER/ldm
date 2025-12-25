@@ -3,3 +3,4 @@ TgCrypto
 aria2p
 aiohttp
 uvicorn
+starlette
