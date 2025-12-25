@@ -13,14 +13,21 @@ from pyrogram.errors import FloodWait
 import aria2p
 from aiohttp import web
 
-# Import uvicorn for the web server and starlette for a simple app
+# ================= HEALTH CHECK IMPORTS (UVICORN/STARLETTE) =================
 try:
     import uvicorn
     from starlette.applications import Starlette
     from starlette.responses import PlainTextResponse
-    from starlette.routing import Route
+    from starlette.routing import Route 
+    UVICORN_AVAILABLE = True
 except ImportError:
     print("WARNING: uvicorn and starlette not installed. Health check will not run.")
+    # Define placeholder variables to prevent NameErrors later
+    Route = None
+    Starlette = None
+    PlainTextResponse = None
+    UVICORN_AVAILABLE = False
+# ============================================================================
 
 # ================= CONFIG =================
 API_ID = int(os.getenv("API_ID", "18979569"))
@@ -136,10 +143,6 @@ app = Client(
     bot_token=BOT_TOKEN,
     workers=16
 )
-
-# start.py
-from pyrogram import filters, enums
-from pyrogram.types import Message
 
 @app.on_message(filters.command("start"))
 async def start(_, m):
@@ -503,12 +506,12 @@ async def bot_stats(_, m: Message):
     
 # ================= HEALTH CHECK (UVICORN) =================
 
-async def health_endpoint(request):
-    """Simple Starlette endpoint for the health check."""
-    return PlainTextResponse("OK")
+if UVICORN_AVAILABLE:
+    async def health_endpoint(request):
+        """Simple Starlette endpoint for the health check."""
+        return PlainTextResponse("OK")
 
-# Starlette application setup
-if 'uvicorn' in globals():
+    # Starlette application setup
     routes = [
         Route("/health", endpoint=health_endpoint)
     ]
@@ -540,7 +543,7 @@ if __name__ == "__main__":
     app.start_time = time.time()
     
     # Start the Uvicorn/Starlette health check in a separate thread
-    if 'uvicorn' in globals():
+    if UVICORN_AVAILABLE:
         threading.Thread(target=run_health, daemon=True).start()
         print(f"🌐 Health check running on port {HEALTH_PORT} (Uvicorn/Starlette)\n")
     
