@@ -1,3 +1,5 @@
+# bot.py
+
 import os
 import time
 import asyncio
@@ -12,6 +14,18 @@ from pyrogram.errors import FloodWait
 
 import aria2p
 from aiohttp import web
+
+# ================= HEALTH CHECK IMPORTS (MODULARIZED) =================
+# We try to import the web server logic from the new module
+try:
+    from plugins.weblive import start_web_server_thread
+    UVICORN_AVAILABLE = True
+except ImportError as e:
+    # This will catch if the module or its dependencies (uvicorn/starlette) are missing
+    print("WARNING: Could not import web server module 'plugins.weblive'. Health check will not run.")
+    print(f"Import error details: {e}")
+    UVICORN_AVAILABLE = False
+# ======================================================================
 
 # ================= CONFIG =================
 API_ID = int(os.getenv("API_ID", "18979569"))
@@ -127,10 +141,6 @@ app = Client(
     bot_token=BOT_TOKEN,
     workers=16
 )
-
-# start.py
-from pyrogram import filters, enums
-from pyrogram.types import Message
 
 @app.on_message(filters.command("start"))
 async def start(_, m):
@@ -313,9 +323,9 @@ async def leech(_, m: Message):
             else:
                 # TRANSITION MESSAGE
                 await edit_message_async(msg, 
-                                         f"✅ Download complete! Starting upload of **{dl.name}**\n"
-                                         f"To cancel upload, use `/cancel{download_index}_{gid}`", 
-                                         parse_mode=PARSE_MODE)
+                                            f"✅ Download complete! Starting upload of **{dl.name}**\n"
+                                            f"To cancel upload, use `/cancel{download_index}_{gid}`", 
+                                            parse_mode=PARSE_MODE)
                 
                 # Store GID, file path, and cancel flag for upload phase tracking
                 ACTIVE[gid] = {"cancel": False, "file_path": file_path, "name": dl.name, "last_edit": 0, "msg": msg}
@@ -354,9 +364,10 @@ async def cancel(_, m: Message):
             try:
                 dl = await asyncio.to_thread(aria2.get_download, task_id)
                 await asyncio.to_thread(aria2.remove, [dl], force=True)
-                await reply_message_async(m, f"🛑 Cancelled Download GID: **{task_id}**", parse_mode=enums.ParseMode.MARKDOWN)
             except Exception as e:
-                await reply_message_async(m, f"🛑 Could not cancel GID **{task_id}**: {e}", parse_mode=enums.ParseMode.MARKDOWN)
+                # Ignore exception if download wasn't in aria2's list anymore
+                print(f"Error removing Aria2 download: {e}")
+            await reply_message_async(m, f"🛑 Cancelled Download GID: **{task_id}**", parse_mode=enums.ParseMode.MARKDOWN)
     else:
         await reply_message_async(m, f"Task ID **{task_id}** not found or already complete.", parse_mode=enums.ParseMode.MARKDOWN)
 
@@ -388,7 +399,7 @@ def upload_progress(current, total, gid, start_time, name, parse_mode, loop, dow
         f"┠ Processed: {format_size(current)} of {format_size(total)}\n"
         f"┠ Status: Upload | ETA: {eta_str}\n"
         f"┠ Speed: {format_speed(speed)} | Elapsed: {elapsed_str}\n"
-        f"┠ Engine: PyroMulti v2.2.11\n"
+        f"┠ Engine: Pyrogram v2\n"
         f"┠ Mode: #Leech | #qBit\n"
         f"┠ User: {user_first} | ID: {user_id}\n"
         f"┖ /cancel{download_index}_{gid}"
@@ -491,23 +502,6 @@ async def bot_stats(_, m: Message):
     
     await reply_message_async(m, stats_text, parse_mode=enums.ParseMode.MARKDOWN)
     
-async def health(request):
-    return web.Response(text="OK")
-
-async def start_health():
-    apph = web.Application()
-    apph.router.add_get("/health", health)
-    runner = web.AppRunner(apph)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", HEALTH_PORT)
-    await site.start()
-
-def run_health():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(start_health())
-    loop.run_forever()
-
 if __name__ == "__main__":
     try:
         aria2.get_stats()
@@ -520,5 +514,10 @@ if __name__ == "__main__":
 
     # Store bot start time for uptime calculation
     app.start_time = time.time()
-    threading.Thread(target=run_health, daemon=True).start()
+    
+    # Start the Uvicorn/Starlette health check in a separate thread
+    if UVICORN_AVAILABLE:
+        # Call the function imported from plugins.weblive
+        start_web_server_thread(HEALTH_PORT)
+    
     app.run()
